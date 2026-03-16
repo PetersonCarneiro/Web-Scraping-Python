@@ -113,12 +113,17 @@ def configurar_driver():
 
     chrome_options = Options()
 
-    # Em GitHub Actions, rodar headless por padrão evita travamentos de renderização
-    # e timeouts no carregamento da tela de login quando não há display disponível.
-    # É possível sobrescrever com EQS_HEADLESS=false.
-    headless_default = "true" if os.environ.get("GITHUB_ACTIONS", "").lower() == "true" else "false"
+    # Em GitHub Actions, o headless pode ser bloqueado por anti-bot em alguns sites.
+    # Se houver DISPLAY (Xvfb ativo), usamos modo "visível" por padrão para ficar
+    # mais próximo do comportamento no Colab. Sem DISPLAY, caímos para headless.
+    em_github_actions = os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
+    possui_display = bool(os.environ.get("DISPLAY"))
+    headless_default = "false" if (em_github_actions and possui_display) else "true"
     headless_ativo = os.environ.get("EQS_HEADLESS", headless_default).lower() in {"1", "true", "yes"}
-    print(f"► Modo headless: {'ATIVO' if headless_ativo else 'DESATIVADO'}")
+    print(
+        f"► Modo headless: {'ATIVO' if headless_ativo else 'DESATIVADO'} "
+        f"(default={headless_default}, DISPLAY={'OK' if possui_display else 'AUSENTE'})"
+    )
 
     if headless_ativo:
         chrome_options.add_argument("--headless=new")

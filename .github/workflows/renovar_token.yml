@@ -51,6 +51,8 @@ jobs:
           # Necessário para o selenium-wire funcionar no Linux headless
           DISPLAY: ":99"
           DBUS_SESSION_BUS_ADDRESS: /dev/null
+          # Mantém o Chrome em modo visível no Xvfb (comportamento próximo ao Colab)
+          EQS_HEADLESS: "false"
         run: python renovar_token.py
 
 
