@@ -112,10 +112,17 @@ def configurar_driver():
         print(f"► Erro ao checar Chrome: {e}")
 
     chrome_options = Options()
-    # Em CI com Xvfb, executar com navegador visível costuma ser mais estável
-    # em fluxos de login com proteção anti-bot.
-    if os.environ.get("EQS_HEADLESS", "false").lower() in {"1", "true", "yes"}:
+
+    # Em GitHub Actions, rodar headless por padrão evita travamentos de renderização
+    # e timeouts no carregamento da tela de login quando não há display disponível.
+    # É possível sobrescrever com EQS_HEADLESS=false.
+    headless_default = "true" if os.environ.get("GITHUB_ACTIONS", "").lower() == "true" else "false"
+    headless_ativo = os.environ.get("EQS_HEADLESS", headless_default).lower() in {"1", "true", "yes"}
+    print(f"► Modo headless: {'ATIVO' if headless_ativo else 'DESATIVADO'}")
+
+    if headless_ativo:
         chrome_options.add_argument("--headless=new")
+        chrome_options.add_argument("--remote-debugging-port=9222")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
