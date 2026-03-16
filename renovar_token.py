@@ -19,7 +19,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseUpload
 
 
 # ============================================================
@@ -40,6 +40,60 @@ ARQUIVO_EXCEL  = "Eqs_Tokens.xlsx"
 #  SEÇÃO 2 — GOOGLE DRIVE (SERVICE ACCOUNT)
 # ============================================================
 
+def autenticar_drive():
+    """Autentica no Google Drive via Service Account."""
+    info  = json.loads(SA_JSON)
+    creds = service_account.Credentials.from_service_account_info(
+        info,
+        scopes=['https://www.googleapis.com/auth/drive']
+    )
+    return build('drive', 'v3', credentials=creds)
+
+
+def salvar_excel_no_drive(service, df: pd.DataFrame):
+    """Salva o DataFrame como Excel no Google Drive, substituindo o arquivo anterior."""
+    resultado = service.files().list(
+        q=f"name='{ARQUIVO_EXCEL}' and '{FOLDER_ID}' in parents and trashed=false",
+        fields="files(id, name)"
+    ).execute()
+
+    arquivos = resultado.get('files', [])
+
+    buffer = io.BytesIO()
+    df.to_excel(buffer, index=False)
+    buffer.seek(0)
+
+    media = MediaIoBaseUpload(
+        buffer,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
+
+    if arquivos:
+        file_id = arquivos[0]['id']
+        service.files().update(fileId=file_id, media_body=media).execute()
+        print(f"✔ Arquivo atualizado no Drive (id: {file_id})")
+    else:
+        metadata = {'name': ARQUIVO_EXCEL, 'parents': [FOLDER_ID]}
+        service.files().create(body=metadata, media_body=media).execute()
+        print(f"✔ Novo arquivo criado no Drive")
+
+
+# ============================================================
+#  SEÇÃO 3 — FUNÇÕES AUXILIARES
+# ============================================================
+
+def decodificar_expiracao_jwt(token: str):
+    """Extrai o campo 'exp' do payload JWT."""
+    try:
+        payload_b64  = token.split('.')[1]
+        payload_b64 += '=' * (-len(payload_b64) % 4)
+        payload      = json.loads(base64.b64decode(payload_b64).decode('utf-8'))
+        return payload.get('exp')
+    except Exception as e:
+        print(f"⚠ Não foi possível decodificar o JWT: {e}")
+        return None
+
+
 def configurar_driver():
     """Inicializa o Chrome headless com Selenium Wire."""
     chrome_options = Options()
@@ -54,78 +108,14 @@ def configurar_driver():
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option("useAutomationExtension", False)
 
-    # No GitHub Actions o Chrome já está instalado — não precisa do ChromeDriverManager
     try:
         service = Service("/usr/bin/chromedriver")
-        driver = webdriver.Chrome(service=service, options=chrome_options)
+        driver  = webdriver.Chrome(service=service, options=chrome_options)
     except Exception:
-        # Fallback para ChromeDriverManager se chromedriver não estiver no PATH
         service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=chrome_options)
+        driver  = webdriver.Chrome(service=service, options=chrome_options)
 
     return driver
-
-
-def salvar_excel_no_drive(service, df: pd.DataFrame):
-    """Salva o DataFrame como Excel no Google Drive, substituindo o arquivo anterior."""
-
-    # Verifica se o arquivo já existe na pasta
-    resultado = service.files().list(
-        q=f"name='{ARQUIVO_EXCEL}' and '{FOLDER_ID}' in parents and trashed=false",
-        fields="files(id, name)"
-    ).execute()
-
-    arquivos = resultado.get('files', [])
-
-    # Converte DataFrame para bytes Excel em memória
-    buffer = io.BytesIO()
-    df.to_excel(buffer, index=False)
-    buffer.seek(0)
-
-    media = MediaIoBaseUpload(
-        buffer,
-        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    )
-
-    if arquivos:
-        # Atualiza o arquivo existente
-        file_id = arquivos[0]['id']
-        service.files().update(fileId=file_id, media_body=media).execute()
-        print(f"✔ Arquivo atualizado no Drive (id: {file_id})")
-    else:
-        # Cria novo arquivo
-        metadata = {'name': ARQUIVO_EXCEL, 'parents': [FOLDER_ID]}
-        service.files().create(body=metadata, media_body=media).execute()
-        print(f"✔ Novo arquivo criado no Drive")
-
-
-# ============================================================
-#  SEÇÃO 3 — FUNÇÕES AUXILIARES
-# ============================================================
-
-def decodificar_expiracao_jwt(token: str):
-    """Extrai o campo 'exp' do payload JWT."""
-    try:
-        payload_b64 = token.split('.')[1]
-        payload_b64 += '=' * (-len(payload_b64) % 4)
-        payload = json.loads(base64.b64decode(payload_b64).decode('utf-8'))
-        return payload.get('exp')
-    except Exception as e:
-        print(f"⚠ Não foi possível decodificar o JWT: {e}")
-        return None
-
-
-def configurar_driver():
-    """Inicializa o Chrome headless com Selenium Wire."""
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--window-size=1920,1080")
-
-    service = Service(ChromeDriverManager().install())
-    return webdriver.Chrome(service=service, options=chrome_options)
 
 
 # ============================================================
@@ -143,11 +133,10 @@ for tentativa in range(1, MAX_TENTATIVAS + 1):
     try:
         driver = configurar_driver()
 
-       # Login
+        # Login
         print("► Acessando página de login...")
         driver.get("https://eqs.arenanet.com.br/dist/#/login")
 
-        # Aguarda o campo de login estar visível e interagível
         campo_login = WebDriverWait(driver, 30).until(
             EC.element_to_be_clickable((By.ID, "login"))
         )
@@ -160,7 +149,6 @@ for tentativa in range(1, MAX_TENTATIVAS + 1):
         campo_senha.clear()
         campo_senha.send_keys(EQS_PASSWORD)
 
-        # Pequena pausa antes de clicar — evita que o Angular ignore o clique
         time.sleep(1)
 
         botao = WebDriverWait(driver, 10).until(
@@ -169,17 +157,13 @@ for tentativa in range(1, MAX_TENTATIVAS + 1):
         botao.click()
 
         print("► Aguardando redirecionamento após login...")
-
-        # Aguarda a URL mudar OU o token aparecer nas requisições (o que vier primeiro)
         WebDriverWait(driver, 30).until(
             lambda drv: (
                 drv.current_url != "https://eqs.arenanet.com.br/dist/#/login"
                 or any(URL_ALVO in req.url for req in drv.requests)
             )
         )
-
-        url_atual = driver.current_url
-        print(f"✔ Login bem-sucedido! URL atual: {url_atual}")
+        print(f"✔ Login bem-sucedido! URL atual: {driver.current_url}")
 
         # Navegação
         print("► Expandindo menu 'Relatórios (CHM)'...")
@@ -207,17 +191,16 @@ for tentativa in range(1, MAX_TENTATIVAS + 1):
         # Captura headers
         for req in driver.requests:
             if URL_ALVO in req.url:
-                headers          = req.headers
-                token            = headers.get('Authorization') or headers.get('authorization')
-                ido              = headers.get('ido') or headers.get('Ido')
-                cookie           = headers.get('Cookie') or headers.get('cookie')
-                token_expiracao  = decodificar_expiracao_jwt(token)
+                headers         = req.headers
+                token           = headers.get('Authorization') or headers.get('authorization')
+                ido             = headers.get('ido') or headers.get('Ido')
+                cookie          = headers.get('Cookie') or headers.get('cookie')
+                token_expiracao = decodificar_expiracao_jwt(token)
                 break
 
         if not token:
             raise ValueError("Token não encontrado na requisição.")
 
-        # Valida expiração
         agora = int(time.time())
         if token_expiracao and token_expiracao <= agora:
             raise ValueError("Token capturado já está expirado.")
@@ -230,7 +213,7 @@ for tentativa in range(1, MAX_TENTATIVAS + 1):
         print(f"✖ Erro na tentativa {tentativa}: {e}")
         if tentativa == MAX_TENTATIVAS:
             print("✖ Todas as tentativas falharam.")
-            raise  # Faz o GitHub Actions marcar o job como falha
+            raise
 
     finally:
         if driver:
