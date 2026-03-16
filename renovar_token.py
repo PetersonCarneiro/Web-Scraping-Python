@@ -16,6 +16,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
+from selenium.common.exceptions import TimeoutException
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -117,8 +118,15 @@ def configurar_driver():
     chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_argument("--disable-extensions")
+    chrome_options.add_argument("--ignore-certificate-errors")
+    chrome_options.add_argument("--ignore-ssl-errors=yes")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option("useAutomationExtension", False)
+
+    seleniumwire_options = {
+        # Evita falhas de TLS ao trafegar HTTPS pelo proxy interno do selenium-wire
+        "verify_ssl": False,
+    }
 
     # Tenta 3 abordagens em sequência
     erros = []
@@ -127,7 +135,11 @@ def configurar_driver():
     try:
         print("► Tentando chromedriver do PATH...")
         service = Service("/usr/bin/chromedriver")
-        driver  = webdriver.Chrome(service=service, options=chrome_options)
+        driver  = webdriver.Chrome(
+            service=service,
+            options=chrome_options,
+            seleniumwire_options=seleniumwire_options,
+        )
         print("✔ Driver iniciado via /usr/bin/chromedriver")
         return driver
     except Exception as e:
@@ -137,7 +149,11 @@ def configurar_driver():
     try:
         print("► Tentando ChromeDriverManager...")
         service = Service(ChromeDriverManager().install())
-        driver  = webdriver.Chrome(service=service, options=chrome_options)
+        driver  = webdriver.Chrome(
+            service=service,
+            options=chrome_options,
+            seleniumwire_options=seleniumwire_options,
+        )
         print("✔ Driver iniciado via ChromeDriverManager")
         return driver
     except Exception as e:
@@ -146,13 +162,52 @@ def configurar_driver():
     # Abordagem 3: deixar o Selenium encontrar automaticamente
     try:
         print("► Tentando Selenium auto-detect...")
-        driver = webdriver.Chrome(options=chrome_options)
+        driver = webdriver.Chrome(
+            options=chrome_options,
+            seleniumwire_options=seleniumwire_options,
+        )
         print("✔ Driver iniciado via auto-detect")
         return driver
     except Exception as e:
         erros.append(f"Auto-detect: {e}")
 
     raise RuntimeError(f"Não foi possível iniciar o Chrome. Erros:\n" + "\n".join(erros))
+
+
+def aguardar_primeiro_elemento_clicavel(driver, timeout, seletores):
+    """Retorna o primeiro elemento clicável encontrado entre múltiplos seletores."""
+    espera = WebDriverWait(driver, timeout)
+    ultimo_erro = None
+
+    for by, valor in seletores:
+        try:
+            return espera.until(EC.element_to_be_clickable((by, valor)))
+        except TimeoutException as e:
+            ultimo_erro = e
+
+    raise TimeoutException(
+        f"Não encontrou elemento clicável com nenhum seletor: {seletores}"
+    ) from ultimo_erro
+
+
+def dump_diagnostico_pagina(driver, prefixo='diagnostico'):
+    """Salva screenshot e HTML para facilitar troubleshooting no GitHub Actions."""
+    timestamp = int(time.time())
+    screenshot = f"{prefixo}_{timestamp}.png"
+    html = f"{prefixo}_{timestamp}.html"
+
+    try:
+        driver.save_screenshot(screenshot)
+        print(f"► Screenshot salvo: {screenshot}")
+    except Exception as e:
+        print(f"⚠ Falha ao salvar screenshot: {e}")
+
+    try:
+        with open(html, 'w', encoding='utf-8') as f:
+            f.write(driver.page_source)
+        print(f"► HTML salvo: {html}")
+    except Exception as e:
+        print(f"⚠ Falha ao salvar HTML: {e}")
 
 
 # ============================================================
@@ -174,22 +229,45 @@ for tentativa in range(1, MAX_TENTATIVAS + 1):
         print("► Acessando página de login...")
         driver.get("https://eqs.arenanet.com.br/dist/#/login")
 
-        campo_login = WebDriverWait(driver, 30).until(
-            EC.element_to_be_clickable((By.ID, "login"))
+        WebDriverWait(driver, 30).until(
+            lambda drv: drv.execute_script("return document.readyState") == "complete"
+        )
+
+        campo_login = aguardar_primeiro_elemento_clicavel(
+            driver,
+            timeout=30,
+            seletores=[
+                (By.ID, "login"),
+                (By.NAME, "login"),
+                (By.CSS_SELECTOR, "input[type='text']"),
+                (By.CSS_SELECTOR, "input[type='email']"),
+            ],
         )
         campo_login.clear()
         campo_login.send_keys(EQS_LOGIN)
 
-        campo_senha = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.ID, "senha"))
+        campo_senha = aguardar_primeiro_elemento_clicavel(
+            driver,
+            timeout=20,
+            seletores=[
+                (By.ID, "senha"),
+                (By.NAME, "senha"),
+                (By.CSS_SELECTOR, "input[type='password']"),
+            ],
         )
         campo_senha.clear()
         campo_senha.send_keys(EQS_PASSWORD)
 
         time.sleep(1)
 
-        botao = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.TAG_NAME, "button"))
+        botao = aguardar_primeiro_elemento_clicavel(
+            driver,
+            timeout=20,
+            seletores=[
+                (By.CSS_SELECTOR, "button[type='submit']"),
+                (By.CSS_SELECTOR, "button.btn.btn-primary"),
+                (By.TAG_NAME, "button"),
+            ],
         )
         botao.click()
 
@@ -248,6 +326,10 @@ for tentativa in range(1, MAX_TENTATIVAS + 1):
 
     except Exception as e:
         print(f"✖ Erro na tentativa {tentativa}: {e}")
+        if driver:
+            print(f"► URL atual no erro: {driver.current_url}")
+            print(f"► Título da página no erro: {driver.title}")
+            dump_diagnostico_pagina(driver, prefixo=f"falha_tentativa_{tentativa}")
         if tentativa == MAX_TENTATIVAS:
             print("✖ Todas as tentativas falharam.")
             raise

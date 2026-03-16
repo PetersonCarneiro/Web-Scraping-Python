@@ -53,6 +53,17 @@ jobs:
           DBUS_SESSION_BUS_ADDRESS: /dev/null
         run: python renovar_token.py
 
+
+      - name: Publicar artefatos de diagnóstico
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostico-renovar-token
+          path: |
+            falha_tentativa_*.png
+            falha_tentativa_*.html
+          if-no-files-found: ignore
+
       - name: Notificar falha
         if: failure()
         run: echo "❌ Falha na renovação do token! Verifique os logs acima."
