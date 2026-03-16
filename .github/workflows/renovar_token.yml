@@ -43,6 +43,9 @@ jobs:
           EQS_PASSWORD: ${{ secrets.EQS_PASSWORD }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          # Necessário para o selenium-wire funcionar no Linux headless
+          DISPLAY: ":99"
+          DBUS_SESSION_BUS_ADDRESS: /dev/null
         run: python renovar_token.py
 
       - name: Notificar falha
