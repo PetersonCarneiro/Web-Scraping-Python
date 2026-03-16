@@ -96,6 +96,19 @@ def decodificar_expiracao_jwt(token: str):
 
 def configurar_driver():
     """Inicializa o Chrome headless com Selenium Wire."""
+    import subprocess
+    import shutil
+
+    # Diagnóstico do ambiente
+    print(f"► Chrome path: {shutil.which('google-chrome') or shutil.which('google-chrome-stable') or 'NÃO ENCONTRADO'}")
+    print(f"► ChromeDriver path: {shutil.which('chromedriver') or 'NÃO ENCONTRADO'}")
+
+    try:
+        result = subprocess.run(['google-chrome', '--version'], capture_output=True, text=True)
+        print(f"► Chrome versão: {result.stdout.strip()}")
+    except Exception as e:
+        print(f"► Erro ao checar Chrome: {e}")
+
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
@@ -104,18 +117,42 @@ def configurar_driver():
     chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_argument("--disable-extensions")
-    chrome_options.add_argument("--remote-debugging-port=9222")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option("useAutomationExtension", False)
 
+    # Tenta 3 abordagens em sequência
+    erros = []
+
+    # Abordagem 1: chromedriver no PATH
     try:
+        print("► Tentando chromedriver do PATH...")
         service = Service("/usr/bin/chromedriver")
         driver  = webdriver.Chrome(service=service, options=chrome_options)
-    except Exception:
+        print("✔ Driver iniciado via /usr/bin/chromedriver")
+        return driver
+    except Exception as e:
+        erros.append(f"PATH: {e}")
+
+    # Abordagem 2: ChromeDriverManager
+    try:
+        print("► Tentando ChromeDriverManager...")
         service = Service(ChromeDriverManager().install())
         driver  = webdriver.Chrome(service=service, options=chrome_options)
+        print("✔ Driver iniciado via ChromeDriverManager")
+        return driver
+    except Exception as e:
+        erros.append(f"ChromeDriverManager: {e}")
 
-    return driver
+    # Abordagem 3: deixar o Selenium encontrar automaticamente
+    try:
+        print("► Tentando Selenium auto-detect...")
+        driver = webdriver.Chrome(options=chrome_options)
+        print("✔ Driver iniciado via auto-detect")
+        return driver
+    except Exception as e:
+        erros.append(f"Auto-detect: {e}")
+
+    raise RuntimeError(f"Não foi possível iniciar o Chrome. Erros:\n" + "\n".join(erros))
 
 
 # ============================================================
