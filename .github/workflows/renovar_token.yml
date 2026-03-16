@@ -1,0 +1,41 @@
+name: Renovar Token EQS
+
+on:
+  schedule:
+    # Roda todo dia útil às 7h horário de Brasília (10h UTC)
+    - cron: '0 10 * * 1-5'
+  workflow_dispatch:  # Permite rodar manualmente também
+
+jobs:
+  renovar-token:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Instalar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Instalar Google Chrome
+        run: |
+          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt-get install -y ./google-chrome-stable_current_amd64.deb
+
+      - name: Rodar script de renovação
+        env:
+          EQS_LOGIN: ${{ secrets.EQS_LOGIN }}
+          EQS_PASSWORD: ${{ secrets.EQS_PASSWORD }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+        run: python renovar_token.py
+
+      - name: Notificar falha
+        if: failure()
+        run: echo "❌ Falha na renovação do token! Verifique os logs acima."
