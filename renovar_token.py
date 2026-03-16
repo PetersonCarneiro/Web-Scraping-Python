@@ -7,6 +7,7 @@ import io
 import base64
 import json
 import time
+import traceback
 import pandas as pd
 
 from seleniumwire import webdriver
@@ -111,7 +112,10 @@ def configurar_driver():
         print(f"► Erro ao checar Chrome: {e}")
 
     chrome_options = Options()
-    chrome_options.add_argument("--headless=new")
+    # Em CI com Xvfb, executar com navegador visível costuma ser mais estável
+    # em fluxos de login com proteção anti-bot.
+    if os.environ.get("EQS_HEADLESS", "false").lower() in {"1", "true", "yes"}:
+        chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
@@ -190,6 +194,27 @@ def aguardar_primeiro_elemento_clicavel(driver, timeout, seletores):
     ) from ultimo_erro
 
 
+def aguardar_login_disponivel(driver, timeout=40):
+    """Aguarda a página ficar utilizável para preencher login/senha."""
+    espera = WebDriverWait(driver, timeout)
+
+    # Alguns ambientes mantêm o readyState em "interactive" por longos períodos,
+    # então aceitamos também quando os campos de login já apareceram.
+    espera.until(
+        lambda drv: (
+            drv.execute_script("return document.readyState") == "complete"
+            or len(drv.find_elements(By.CSS_SELECTOR, "input[type='password']")) > 0
+            or len(drv.find_elements(By.ID, "login")) > 0
+            or len(drv.find_elements(By.NAME, "login")) > 0
+        )
+    )
+
+    if "chrome-error" in driver.current_url:
+        raise TimeoutException(
+            f"Chrome abriu página de erro de rede: {driver.current_url}"
+        )
+
+
 def dump_diagnostico_pagina(driver, prefixo='diagnostico'):
     """Salva screenshot e HTML para facilitar troubleshooting no GitHub Actions."""
     timestamp = int(time.time())
@@ -228,10 +253,15 @@ for tentativa in range(1, MAX_TENTATIVAS + 1):
         # Login
         print("► Acessando página de login...")
         driver.get("https://eqs.arenanet.com.br/dist/#/login")
-
-        WebDriverWait(driver, 30).until(
-            lambda drv: drv.execute_script("return document.readyState") == "complete"
-        )
+        print(f"► URL após get: {driver.current_url}")
+        print(f"► Título após get: {driver.title}")
+        try:
+            aguardar_login_disponivel(driver, timeout=40)
+        except TimeoutException:
+            estado = driver.execute_script("return document.readyState")
+            raise TimeoutException(
+                f"Timeout carregando login. readyState={estado}, url={driver.current_url}"
+            )
 
         campo_login = aguardar_primeiro_elemento_clicavel(
             driver,
@@ -325,7 +355,9 @@ for tentativa in range(1, MAX_TENTATIVAS + 1):
         break
 
     except Exception as e:
-        print(f"✖ Erro na tentativa {tentativa}: {e}")
+        print(f"✖ Erro na tentativa {tentativa}: {type(e).__name__}: {e!r}")
+        print("► Traceback detalhado:")
+        print(traceback.format_exc())
         if driver:
             print(f"► URL atual no erro: {driver.current_url}")
             print(f"► Título da página no erro: {driver.title}")
