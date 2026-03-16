@@ -23,10 +23,21 @@ jobs:
       - name: Instalar dependências
         run: pip install -r requirements.txt
 
-      - name: Instalar Google Chrome
+      - name: Instalar Google Chrome e ChromeDriver
         run: |
           wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
           sudo apt-get install -y ./google-chrome-stable_current_amd64.deb
+          # Instala o chromedriver compatível com a versão do Chrome
+          CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+')
+          wget -q "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VERSION%%.*}" -O /tmp/chromedriver_version
+          DRIVER_VERSION=$(cat /tmp/chromedriver_version)
+          wget -q "https://chromedriver.storage.googleapis.com/${DRIVER_VERSION}/chromedriver_linux64.zip"
+          unzip -q chromedriver_linux64.zip
+          sudo mv chromedriver /usr/bin/chromedriver
+          sudo chmod +x /usr/bin/chromedriver
+          echo "✔ Chrome e ChromeDriver instalados"
+          google-chrome --version
+          chromedriver --version
 
       - name: Rodar script de renovação
         env:
