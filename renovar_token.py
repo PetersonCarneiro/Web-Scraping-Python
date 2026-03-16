@@ -40,14 +40,30 @@ ARQUIVO_EXCEL  = "Eqs_Tokens.xlsx"
 #  SEÇÃO 2 — GOOGLE DRIVE (SERVICE ACCOUNT)
 # ============================================================
 
-def autenticar_drive():
-    """Autentica no Google Drive via Service Account."""
-    info = json.loads(SA_JSON)
-    creds = service_account.Credentials.from_service_account_info(
-        info,
-        scopes=['https://www.googleapis.com/auth/drive']
-    )
-    return build('drive', 'v3', credentials=creds)
+def configurar_driver():
+    """Inicializa o Chrome headless com Selenium Wire."""
+    chrome_options = Options()
+    chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_argument("--disable-extensions")
+    chrome_options.add_argument("--remote-debugging-port=9222")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option("useAutomationExtension", False)
+
+    # No GitHub Actions o Chrome já está instalado — não precisa do ChromeDriverManager
+    try:
+        service = Service("/usr/bin/chromedriver")
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+    except Exception:
+        # Fallback para ChromeDriverManager se chromedriver não estiver no PATH
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+
+    return driver
 
 
 def salvar_excel_no_drive(service, df: pd.DataFrame):
@@ -127,21 +143,43 @@ for tentativa in range(1, MAX_TENTATIVAS + 1):
     try:
         driver = configurar_driver()
 
-        # Login
+       # Login
         print("► Acessando página de login...")
         driver.get("https://eqs.arenanet.com.br/dist/#/login")
 
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.ID, "login"))
-        ).send_keys(EQS_LOGIN)
-
-        driver.find_element(By.ID, "senha").send_keys(EQS_PASSWORD)
-        driver.find_element(By.TAG_NAME, "button").click()
-
-        WebDriverWait(driver, 20).until_not(
-            EC.url_to_be("https://eqs.arenanet.com.br/dist/#/login")
+        # Aguarda o campo de login estar visível e interagível
+        campo_login = WebDriverWait(driver, 30).until(
+            EC.element_to_be_clickable((By.ID, "login"))
         )
-        print("✔ Login bem-sucedido!")
+        campo_login.clear()
+        campo_login.send_keys(EQS_LOGIN)
+
+        campo_senha = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.ID, "senha"))
+        )
+        campo_senha.clear()
+        campo_senha.send_keys(EQS_PASSWORD)
+
+        # Pequena pausa antes de clicar — evita que o Angular ignore o clique
+        time.sleep(1)
+
+        botao = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.TAG_NAME, "button"))
+        )
+        botao.click()
+
+        print("► Aguardando redirecionamento após login...")
+
+        # Aguarda a URL mudar OU o token aparecer nas requisições (o que vier primeiro)
+        WebDriverWait(driver, 30).until(
+            lambda drv: (
+                drv.current_url != "https://eqs.arenanet.com.br/dist/#/login"
+                or any(URL_ALVO in req.url for req in drv.requests)
+            )
+        )
+
+        url_atual = driver.current_url
+        print(f"✔ Login bem-sucedido! URL atual: {url_atual}")
 
         # Navegação
         print("► Expandindo menu 'Relatórios (CHM)'...")
