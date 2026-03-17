@@ -25,22 +25,11 @@ jobs:
 
       - name: Instalar Google Chrome e ChromeDriver
         run: |
-          # Instala dependências de display virtual
           sudo apt-get install -y xvfb
-
           wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
           sudo apt-get install -y ./google-chrome-stable_current_amd64.deb
-
-          python -m selenium.webdriver.common.selenium_manager --browser chrome
-
-          echo "✔ Versões instaladas:"
-          google-chrome --version
-          chromedriver --version || echo "chromedriver não encontrado no PATH"
-          which chromedriver || echo "which chromedriver falhou"
-
-          # Inicia display virtual
           Xvfb :99 -screen 0 1920x1080x24 &
-          echo "✔ Xvfb iniciado"
+          sleep 2   # ← aguarda o Xvfb subir antes de continuar
 
       - name: Rodar script de renovação
         env:
