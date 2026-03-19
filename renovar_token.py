@@ -253,6 +253,93 @@ def aguardar_login_disponivel(driver, timeout=40):
         raise TimeoutException(f"Chrome abriu página de erro: {driver.current_url}")
 
 
+def login_ainda_visivel(driver):
+    """Indica se o formulário de login ainda está visível na tela."""
+    seletores = [
+        (By.ID, 'login'),
+        (By.NAME, 'login'),
+        (By.ID, 'senha'),
+        (By.NAME, 'senha'),
+        (By.CSS_SELECTOR, "input[type='password']"),
+    ]
+    for by, valor in seletores:
+        for elemento in driver.find_elements(by, valor):
+            try:
+                if elemento.is_displayed():
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def extrair_mensagem_erro_login(driver):
+    """Coleta mensagens de erro visíveis na tela após tentativa de login."""
+    seletores = [
+        (By.CSS_SELECTOR, '.alert'),
+        (By.CSS_SELECTOR, '.alert-danger'),
+        (By.CSS_SELECTOR, '.error'),
+        (By.CSS_SELECTOR, '.error-message'),
+        (By.CSS_SELECTOR, '.toast-message'),
+        (By.CSS_SELECTOR, '.swal2-html-container'),
+    ]
+    mensagens = []
+    for by, valor in seletores:
+        for elemento in driver.find_elements(by, valor):
+            try:
+                texto = elemento.text.strip()
+            except Exception:
+                continue
+            if texto and texto not in mensagens:
+                mensagens.append(texto)
+    return mensagens
+
+
+def aguardar_pos_login(driver, timeout=30):
+    """Aguarda sinais confiáveis de login concluído em SPA sem depender só da URL."""
+    url_login = 'https://eqs.arenanet.com.br/dist/#/login'
+
+    def _login_concluido(drv):
+        if 'chrome-error' in drv.current_url:
+            raise TimeoutException(f"Chrome abriu página de erro: {drv.current_url}")
+
+        if drv.current_url != url_login:
+            return True
+
+        if not login_ainda_visivel(drv):
+            return True
+
+        indicadores_pos_login = [
+            (By.XPATH, "//span[text()='Relatórios (CHM)']"),
+            (By.XPATH, "//span[text()='Itens de LPU Por Local']"),
+            (By.CSS_SELECTOR, 'nav'),
+            (By.CSS_SELECTOR, '.sidebar'),
+        ]
+        for by, valor in indicadores_pos_login:
+            for elemento in drv.find_elements(by, valor):
+                try:
+                    if elemento.is_displayed():
+                        return True
+                except Exception:
+                    continue
+
+        mensagens = extrair_mensagem_erro_login(drv)
+        if mensagens:
+            raise RuntimeError('Falha no login: ' + ' | '.join(mensagens))
+
+        return False
+
+    try:
+        return WebDriverWait(driver, timeout, poll_frequency=1).until(_login_concluido)
+    except TimeoutException as exc:
+        mensagens = extrair_mensagem_erro_login(driver)
+        detalhes = f" URL atual: {driver.current_url}"
+        if mensagens:
+            detalhes += ' | Mensagens: ' + ' | '.join(mensagens)
+        raise TimeoutException(
+            'Login não concluiu dentro do tempo esperado.' + detalhes
+        ) from exc
+
+
 def dump_diagnostico_pagina(driver, prefixo='diagnostico'):
     """Salva screenshot e HTML para troubleshooting no GitHub Actions."""
     timestamp = int(time.time())
@@ -329,10 +416,8 @@ for tentativa in range(1, MAX_TENTATIVAS + 1):
         )
         botao.click()
 
-        print('► Aguardando redirecionamento após login...')
-        WebDriverWait(driver, 30).until(
-            lambda drv: drv.current_url != 'https://eqs.arenanet.com.br/dist/#/login'
-        )
+        print('► Aguardando conclusão do login...')
+        aguardar_pos_login(driver, timeout=30)
         print(f"✔ Login bem-sucedido! URL atual: {driver.current_url}")
 
         print("► Expandindo menu 'Relatórios (CHM)'...")
