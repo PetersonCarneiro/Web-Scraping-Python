@@ -15,6 +15,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
@@ -294,6 +295,61 @@ def extrair_mensagem_erro_login(driver):
     return mensagens
 
 
+def possui_sessao_autenticada(driver):
+    """Detecta sinais de autenticação persistidos no browser mesmo com a SPA parada em /login."""
+    try:
+        storages = driver.execute_script(
+            """
+            const dump = (storage) => {
+                const data = {};
+                for (let i = 0; i < storage.length; i++) {
+                    const key = storage.key(i);
+                    data[key] = storage.getItem(key);
+                }
+                return data;
+            };
+            return {
+                local: dump(window.localStorage),
+                session: dump(window.sessionStorage),
+            };
+            """
+        )
+    except Exception:
+        storages = {'local': {}, 'session': {}}
+
+    candidatos_storage = []
+    for bucket in ('local', 'session'):
+        for chave, valor in (storages.get(bucket) or {}).items():
+            if not valor:
+                continue
+            chave_normalizada = str(chave).lower()
+            valor_texto = str(valor)
+            if any(token in chave_normalizada for token in ('token', 'auth', 'jwt', 'bearer', 'ido')):
+                candidatos_storage.append(f'{bucket}:{chave}')
+                continue
+            if valor_texto.startswith('Bearer ') or '"accessToken"' in valor_texto or '"token"' in valor_texto:
+                candidatos_storage.append(f'{bucket}:{chave}')
+
+    if candidatos_storage:
+        print(f"✔ Sessão autenticada detectada via storage: {', '.join(candidatos_storage[:5])}")
+        return True
+
+    try:
+        cookies = driver.get_cookies()
+    except Exception:
+        cookies = []
+
+    cookies_autenticacao = [
+        cookie['name'] for cookie in cookies
+        if any(token in cookie.get('name', '').lower() for token in ('token', 'auth', 'session', 'jwt', 'ido'))
+    ]
+    if cookies_autenticacao:
+        print(f"✔ Sessão autenticada detectada via cookies: {', '.join(cookies_autenticacao[:5])}")
+        return True
+
+    return False
+
+
 def aguardar_pos_login(driver, timeout=30):
     """Aguarda sinais confiáveis de login concluído em SPA sem depender só da URL."""
     url_login = 'https://eqs.arenanet.com.br/dist/#/login'
@@ -303,6 +359,9 @@ def aguardar_pos_login(driver, timeout=30):
             raise TimeoutException(f"Chrome abriu página de erro: {drv.current_url}")
 
         if drv.current_url != url_login:
+            return True
+
+        if possui_sessao_autenticada(drv):
             return True
 
         if not login_ainda_visivel(drv):
@@ -354,6 +413,40 @@ def dump_diagnostico_pagina(driver, prefixo='diagnostico'):
             print(f"► Diagnóstico salvo: {filepath}")
         except Exception as e:
             print(f"⚠ Falha ao salvar {ext}: {e}")
+
+
+def submeter_login(driver, botao, campo_senha):
+    """Aplica estratégias de submit compatíveis com páginas SPA e execução headless."""
+    erros = []
+    estrategias = [
+        ('click', lambda: botao.click()),
+        ('enter', lambda: campo_senha.send_keys(Keys.ENTER)),
+        (
+            'submit_js',
+            lambda: driver.execute_script(
+                """
+                const button = arguments[0];
+                const form = button.closest('form');
+                if (form) {
+                    form.requestSubmit ? form.requestSubmit() : form.submit();
+                    return;
+                }
+                button.click();
+                """,
+                botao,
+            ),
+        ),
+    ]
+
+    for nome, estrategia in estrategias:
+        try:
+            print(f"► Tentando submit do login via {nome}...")
+            estrategia()
+            return
+        except Exception as exc:
+            erros.append(f'{nome}: {exc}')
+
+    raise RuntimeError('Nenhuma estratégia de submit do login funcionou: ' + ' | '.join(erros))
 
 
 # ============================================================
@@ -414,30 +507,42 @@ for tentativa in range(1, MAX_TENTATIVAS + 1):
                 (By.TAG_NAME, 'button'),
             ],
         )
-        botao.click()
+        submeter_login(driver, botao, campo_senha)
 
         print('► Aguardando conclusão do login...')
-        aguardar_pos_login(driver, timeout=30)
+        aguardar_pos_login(driver, timeout=60)
         print(f"✔ Login bem-sucedido! URL atual: {driver.current_url}")
 
-        print("► Expandindo menu 'Relatórios (CHM)'...")
-        relatorios_menu = WebDriverWait(driver, 30).until(
-            EC.presence_of_element_located(
-                (By.XPATH, "//span[text()='Relatórios (CHM)']/..")
-            )
-        )
-        driver.execute_script('arguments[0].click();', relatorios_menu)
+        headers_capturados = None
+        if URL_ALVO not in driver.current_url:
+            url_relatorio = f"https://eqs.arenanet.com.br/dist/#/{URL_ALVO}"
+            print(f"► Navegando diretamente para a rota alvo: {url_relatorio}")
+            driver.get(url_relatorio)
+            try:
+                print(f"► Aguardando interceptação da requisição após navegação direta: .../{URL_ALVO}")
+                headers_capturados = aguardar_headers_requisicao(driver, timeout=15)
+            except TimeoutException:
+                print("⚠ Navegação direta não disparou a requisição alvo; tentando fluxo pelo menu.")
 
-        print("► Clicando em 'Itens de LPU Por Local'...")
-        lpu_local_menu = WebDriverWait(driver, 30).until(
-            EC.presence_of_element_located(
-                (By.XPATH, "//span[text()='Itens de LPU Por Local']/..")
+        if not headers_capturados:
+            print("► Expandindo menu 'Relatórios (CHM)'...")
+            relatorios_menu = WebDriverWait(driver, 30).until(
+                EC.presence_of_element_located(
+                    (By.XPATH, "//span[text()='Relatórios (CHM)']/..")
+                )
             )
-        )
-        driver.execute_script('arguments[0].click();', lpu_local_menu)
+            driver.execute_script('arguments[0].click();', relatorios_menu)
 
-        print(f"► Aguardando interceptação da requisição: .../{URL_ALVO}")
-        headers_capturados = aguardar_headers_requisicao(driver, timeout=30)
+            print("► Clicando em 'Itens de LPU Por Local'...")
+            lpu_local_menu = WebDriverWait(driver, 30).until(
+                EC.presence_of_element_located(
+                    (By.XPATH, "//span[text()='Itens de LPU Por Local']/..")
+                )
+            )
+            driver.execute_script('arguments[0].click();', lpu_local_menu)
+
+            print(f"► Aguardando interceptação da requisição: .../{URL_ALVO}")
+            headers_capturados = aguardar_headers_requisicao(driver, timeout=30)
 
         token = headers_capturados.get('authorization') or headers_capturados.get('Authorization')
         ido = headers_capturados.get('ido') or headers_capturados.get('Ido') or headers_capturados.get('IDO')
