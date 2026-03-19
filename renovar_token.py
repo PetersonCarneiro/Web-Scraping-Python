@@ -1,6 +1,6 @@
 # ============================================================
 #  EQS - RENOVAÇÃO AUTOMÁTICA DE TOKEN | GitHub Actions
-#  Usa Selenium 4 + CDP nativo (sem selenium-wire)
+#  Usa Selenium 4 + logs de performance do Chrome
 # ============================================================
 
 import os
@@ -9,7 +9,6 @@ import base64
 import json
 import time
 import traceback
-import threading
 import pandas as pd
 
 from selenium import webdriver
@@ -30,14 +29,15 @@ from googleapiclient.http import MediaIoBaseUpload
 #  SEÇÃO 1 — CONFIGURAÇÃO
 # ============================================================
 
-EQS_LOGIN    = os.environ['EQS_LOGIN']
+EQS_LOGIN = os.environ['EQS_LOGIN']
 EQS_PASSWORD = os.environ['EQS_PASSWORD']
-FOLDER_ID    = os.environ['GOOGLE_DRIVE_FOLDER_ID']
-SA_JSON      = os.environ['GOOGLE_SERVICE_ACCOUNT_JSON']
+FOLDER_ID = os.environ['GOOGLE_DRIVE_FOLDER_ID']
+SA_JSON = os.environ['GOOGLE_SERVICE_ACCOUNT_JSON']
+EQS_HEADLESS = os.environ.get('EQS_HEADLESS', 'true').lower() != 'false'
 
 MAX_TENTATIVAS = 3
-URL_ALVO       = "chamado/rel-reembolsavel-chamado-estacao/listar"
-ARQUIVO_EXCEL  = "Eqs_Tokens.xlsx"
+URL_ALVO = "chamado/rel-reembolsavel-chamado-estacao/listar"
+ARQUIVO_EXCEL = "Eqs_Tokens.xlsx"
 
 
 # ============================================================
@@ -46,7 +46,7 @@ ARQUIVO_EXCEL  = "Eqs_Tokens.xlsx"
 
 def autenticar_drive():
     """Autentica no Google Drive via Service Account."""
-    info  = json.loads(SA_JSON)
+    info = json.loads(SA_JSON)
     creds = service_account.Credentials.from_service_account_info(
         info,
         scopes=['https://www.googleapis.com/auth/drive']
@@ -79,7 +79,7 @@ def salvar_excel_no_drive(service, df: pd.DataFrame):
     else:
         metadata = {'name': ARQUIVO_EXCEL, 'parents': [FOLDER_ID]}
         service.files().create(body=metadata, media_body=media).execute()
-        print(f"✔ Novo arquivo criado no Drive")
+        print("✔ Novo arquivo criado no Drive")
 
 
 # ============================================================
@@ -89,50 +89,78 @@ def salvar_excel_no_drive(service, df: pd.DataFrame):
 def decodificar_expiracao_jwt(token: str):
     """Extrai o campo 'exp' do payload JWT."""
     try:
-        payload_b64  = token.split('.')[1]
+        payload_b64 = token.split('.')[1]
         payload_b64 += '=' * (-len(payload_b64) % 4)
-        payload      = json.loads(base64.b64decode(payload_b64).decode('utf-8'))
+        payload = json.loads(base64.b64decode(payload_b64).decode('utf-8'))
         return payload.get('exp')
     except Exception as e:
         print(f"⚠ Não foi possível decodificar o JWT: {e}")
         return None
 
 
+def validar_ambiente():
+    """Valida e registra configurações essenciais antes da execução."""
+    obrigatorias = {
+        'EQS_LOGIN': EQS_LOGIN,
+        'EQS_PASSWORD': EQS_PASSWORD,
+        'GOOGLE_DRIVE_FOLDER_ID': FOLDER_ID,
+        'GOOGLE_SERVICE_ACCOUNT_JSON': SA_JSON,
+    }
+    faltando = [nome for nome, valor in obrigatorias.items() if not str(valor).strip()]
+    if faltando:
+        raise RuntimeError(f"Variáveis obrigatórias ausentes ou vazias: {', '.join(faltando)}")
+
+    try:
+        json.loads(SA_JSON)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            "GOOGLE_SERVICE_ACCOUNT_JSON não contém um JSON válido. "
+            "No GitHub Actions, salve o conteúdo bruto do arquivo JSON na secret."
+        ) from e
+
+    print(f"► Execução headless: {EQS_HEADLESS}")
+
+
 def configurar_driver():
     """
-    Inicializa o Chrome com Selenium 4 puro (sem selenium-wire).
-    Ativa o remote debugging port necessário para o CDP funcionar.
+    Inicializa o Chrome com Selenium 4 usando performance logs,
+    compatível com Selenium Python no GitHub Actions.
     """
-    import subprocess, shutil
+    import subprocess
+    import shutil
 
     print(f"► Chrome path : {shutil.which('google-chrome') or shutil.which('google-chrome-stable') or 'NÃO ENCONTRADO'}")
     print(f"► ChromeDriver: {shutil.which('chromedriver') or 'NÃO ENCONTRADO'}")
 
-    try:
-        result = subprocess.run(['google-chrome', '--version'], capture_output=True, text=True)
-        print(f"► Chrome versão: {result.stdout.strip()}")
-    except Exception as e:
-        print(f"► Erro ao checar Chrome: {e}")
+    for chrome_bin in ('google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium'):
+        if shutil.which(chrome_bin):
+            try:
+                result = subprocess.run([chrome_bin, '--version'], capture_output=True, text=True, check=False)
+                print(f"► Chrome versão ({chrome_bin}): {result.stdout.strip() or result.stderr.strip()}")
+                break
+            except Exception as e:
+                print(f"► Erro ao checar {chrome_bin}: {e}")
 
     chrome_options = Options()
-    chrome_options.add_argument("--headless=new")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_argument("--disable-extensions")
-    chrome_options.add_argument("--ignore-certificate-errors")
-    chrome_options.add_argument("--ignore-ssl-errors=yes")
-    chrome_options.add_argument("--remote-debugging-port=9222")
-    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    chrome_options.add_experimental_option("useAutomationExtension", False)
+    if EQS_HEADLESS:
+        chrome_options.add_argument('--headless=new')
+    chrome_options.add_argument('--no-sandbox')
+    chrome_options.add_argument('--disable-dev-shm-usage')
+    chrome_options.add_argument('--disable-gpu')
+    chrome_options.add_argument('--window-size=1920,1080')
+    chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+    chrome_options.add_argument('--disable-extensions')
+    chrome_options.add_argument('--ignore-certificate-errors')
+    chrome_options.add_argument('--ignore-ssl-errors=yes')
+    chrome_options.add_argument('--remote-debugging-port=9222')
+    chrome_options.set_capability('goog:loggingPrefs', {'performance': 'ALL', 'browser': 'ALL'})
+    chrome_options.add_experimental_option('excludeSwitches', ['enable-automation'])
+    chrome_options.add_experimental_option('useAutomationExtension', False)
 
     erros = []
 
-    # Abordagem 1: chromedriver no PATH do sistema
-    for path in ["/usr/bin/chromedriver", "/usr/local/bin/chromedriver"]:
-        if shutil.which(path.split("/")[-1]) or os.path.exists(path):
+    for path in ['/usr/bin/chromedriver', '/usr/local/bin/chromedriver']:
+        if os.path.exists(path):
             try:
                 print(f"► Tentando chromedriver em {path}...")
                 driver = webdriver.Chrome(service=Service(path), options=chrome_options)
@@ -141,53 +169,59 @@ def configurar_driver():
             except Exception as e:
                 erros.append(f"{path}: {e}")
 
-    # Abordagem 2: ChromeDriverManager (baixa a versão compatível automaticamente)
     try:
-        print("► Tentando ChromeDriverManager...")
+        print('► Tentando ChromeDriverManager...')
         driver = webdriver.Chrome(
             service=Service(ChromeDriverManager().install()),
             options=chrome_options
         )
-        print("✔ Driver iniciado via ChromeDriverManager")
+        print('✔ Driver iniciado via ChromeDriverManager')
         return driver
     except Exception as e:
         erros.append(f"ChromeDriverManager: {e}")
 
-    # Abordagem 3: auto-detect do Selenium
     try:
-        print("► Tentando Selenium auto-detect...")
+        print('► Tentando Selenium Manager...')
         driver = webdriver.Chrome(options=chrome_options)
-        print("✔ Driver iniciado via auto-detect")
+        print('✔ Driver iniciado via Selenium Manager')
         return driver
     except Exception as e:
-        erros.append(f"Auto-detect: {e}")
+        erros.append(f"Selenium Manager: {e}")
 
-    raise RuntimeError("Não foi possível iniciar o Chrome. Erros:\n" + "\n".join(erros))
+    raise RuntimeError('Não foi possível iniciar o Chrome. Erros:\n' + '\n'.join(erros))
 
 
-def habilitar_interceptacao_cdp(driver):
-    """
-    Ativa o CDP (Chrome DevTools Protocol) para interceptar requisições
-    de rede sem precisar de proxy externo (substitui o selenium-wire).
-    Retorna um dicionário compartilhado que será populado com os headers
-    da primeira requisição que bater em URL_ALVO.
-    """
-    headers_capturados = {}
-    lock = threading.Lock()
+def extrair_headers_performance_logs(driver):
+    """Lê os performance logs do Chrome e procura a requisição alvo."""
+    logs = driver.get_log('performance')
+    for entry in logs:
+        try:
+            message = json.loads(entry['message'])['message']
+        except (KeyError, json.JSONDecodeError, TypeError):
+            continue
 
-    # Ativa a domain Network do CDP
-    driver.execute_cdp_cmd("Network.enable", {})
+        if message.get('method') != 'Network.requestWillBeSent':
+            continue
 
-    def on_request(params):
-        url = params.get("request", {}).get("url", "")
-        if URL_ALVO in url:
-            with lock:
-                if not headers_capturados:   # captura apenas a primeira ocorrência
-                    headers_capturados.update(params.get("request", {}).get("headers", {}))
-                    print(f"✔ Requisição alvo interceptada via CDP: .../{URL_ALVO}")
+        request = message.get('params', {}).get('request', {})
+        url = request.get('url', '')
+        if URL_ALVO not in url:
+            continue
 
-    driver.add_cdp_listener("Network.requestWillBeSent", on_request)
-    return headers_capturados
+        headers = request.get('headers', {})
+        if headers:
+            print(f"✔ Requisição alvo interceptada via performance logs: {url}")
+            return headers
+    return None
+
+
+def aguardar_headers_requisicao(driver, timeout=30):
+    """Aguarda até a requisição alvo aparecer nos performance logs."""
+    def _buscar(_):
+        headers = extrair_headers_performance_logs(driver)
+        return headers if headers else False
+
+    return WebDriverWait(driver, timeout, poll_frequency=1).until(_buscar)
 
 
 def aguardar_primeiro_elemento_clicavel(driver, timeout, seletores):
@@ -209,21 +243,24 @@ def aguardar_login_disponivel(driver, timeout=40):
     """Aguarda a página de login ficar utilizável."""
     WebDriverWait(driver, timeout).until(
         lambda drv: (
-            drv.execute_script("return document.readyState") == "complete"
+            drv.execute_script('return document.readyState') == 'complete'
             or len(drv.find_elements(By.CSS_SELECTOR, "input[type='password']")) > 0
-            or len(drv.find_elements(By.ID, "login")) > 0
-            or len(drv.find_elements(By.NAME, "login")) > 0
+            or len(drv.find_elements(By.ID, 'login')) > 0
+            or len(drv.find_elements(By.NAME, 'login')) > 0
         )
     )
-    if "chrome-error" in driver.current_url:
+    if 'chrome-error' in driver.current_url:
         raise TimeoutException(f"Chrome abriu página de erro: {driver.current_url}")
 
 
-def dump_diagnostico_pagina(driver, prefixo="diagnostico"):
+def dump_diagnostico_pagina(driver, prefixo='diagnostico'):
     """Salva screenshot e HTML para troubleshooting no GitHub Actions."""
     timestamp = int(time.time())
-    for ext, fn in [("png", lambda f: driver.save_screenshot(f)),
-                    ("html", lambda f: open(f, "w", encoding="utf-8").write(driver.page_source))]:
+    artefatos = [
+        ('png', lambda f: driver.save_screenshot(f)),
+        ('html', lambda f: open(f, 'w', encoding='utf-8').write(driver.page_source)),
+    ]
+    for ext, fn in artefatos:
         filepath = f"{prefixo}_{timestamp}.{ext}"
         try:
             fn(filepath)
@@ -236,23 +273,23 @@ def dump_diagnostico_pagina(driver, prefixo="diagnostico"):
 #  SEÇÃO 4 — CAPTURA DO TOKEN
 # ============================================================
 
+validar_ambiente()
+
 token = ido = cookie = token_expiracao = None
 
 for tentativa in range(1, MAX_TENTATIVAS + 1):
     driver = None
-    print(f"\n{'='*55}")
+    print(f"\n{'=' * 55}")
     print(f"  Tentativa {tentativa}/{MAX_TENTATIVAS}")
-    print(f"{'='*55}")
+    print(f"{'=' * 55}")
 
     try:
         driver = configurar_driver()
+        driver.execute_cdp_cmd('Network.enable', {})
+        driver.get_log('performance')
 
-        # Ativa a interceptação CDP ANTES de carregar qualquer página
-        headers_capturados = habilitar_interceptacao_cdp(driver)
-
-        # ── Login ──────────────────────────────────────────────
-        print("► Acessando página de login...")
-        driver.get("https://eqs.arenanet.com.br/dist/#/login")
+        print('► Acessando página de login...')
+        driver.get('https://eqs.arenanet.com.br/dist/#/login')
         print(f"► URL: {driver.current_url} | Título: {driver.title}")
 
         aguardar_login_disponivel(driver, timeout=40)
@@ -260,8 +297,8 @@ for tentativa in range(1, MAX_TENTATIVAS + 1):
         campo_login = aguardar_primeiro_elemento_clicavel(
             driver, timeout=30,
             seletores=[
-                (By.ID, "login"),
-                (By.NAME, "login"),
+                (By.ID, 'login'),
+                (By.NAME, 'login'),
                 (By.CSS_SELECTOR, "input[type='text']"),
                 (By.CSS_SELECTOR, "input[type='email']"),
             ],
@@ -272,8 +309,8 @@ for tentativa in range(1, MAX_TENTATIVAS + 1):
         campo_senha = aguardar_primeiro_elemento_clicavel(
             driver, timeout=20,
             seletores=[
-                (By.ID, "senha"),
-                (By.NAME, "senha"),
+                (By.ID, 'senha'),
+                (By.NAME, 'senha'),
                 (By.CSS_SELECTOR, "input[type='password']"),
             ],
         )
@@ -286,26 +323,25 @@ for tentativa in range(1, MAX_TENTATIVAS + 1):
             driver, timeout=20,
             seletores=[
                 (By.CSS_SELECTOR, "button[type='submit']"),
-                (By.CSS_SELECTOR, "button.btn.btn-primary"),
-                (By.TAG_NAME, "button"),
+                (By.CSS_SELECTOR, 'button.btn.btn-primary'),
+                (By.TAG_NAME, 'button'),
             ],
         )
         botao.click()
 
-        print("► Aguardando redirecionamento após login...")
+        print('► Aguardando redirecionamento após login...')
         WebDriverWait(driver, 30).until(
-            lambda drv: drv.current_url != "https://eqs.arenanet.com.br/dist/#/login"
+            lambda drv: drv.current_url != 'https://eqs.arenanet.com.br/dist/#/login'
         )
         print(f"✔ Login bem-sucedido! URL atual: {driver.current_url}")
 
-        # ── Navegação ──────────────────────────────────────────
         print("► Expandindo menu 'Relatórios (CHM)'...")
         relatorios_menu = WebDriverWait(driver, 30).until(
             EC.presence_of_element_located(
                 (By.XPATH, "//span[text()='Relatórios (CHM)']/..")
             )
         )
-        driver.execute_script("arguments[0].click();", relatorios_menu)
+        driver.execute_script('arguments[0].click();', relatorios_menu)
 
         print("► Clicando em 'Itens de LPU Por Local'...")
         lpu_local_menu = WebDriverWait(driver, 30).until(
@@ -313,67 +349,64 @@ for tentativa in range(1, MAX_TENTATIVAS + 1):
                 (By.XPATH, "//span[text()='Itens de LPU Por Local']/..")
             )
         )
-        driver.execute_script("arguments[0].click();", lpu_local_menu)
+        driver.execute_script('arguments[0].click();', lpu_local_menu)
 
-        # ── Aguarda o CDP capturar a requisição alvo ───────────
-        print(f"► Aguardando interceptação CDP da requisição: .../{URL_ALVO}")
-        WebDriverWait(driver, 30).until(lambda _: bool(headers_capturados))
+        print(f"► Aguardando interceptação da requisição: .../{URL_ALVO}")
+        headers_capturados = aguardar_headers_requisicao(driver, timeout=30)
 
-        # ── Extrai os valores dos headers ──────────────────────
-        # Headers HTTP são case-insensitive; o CDP os entrega em lowercase
-        token  = headers_capturados.get("authorization") or headers_capturados.get("Authorization")
-        ido    = headers_capturados.get("ido")
-        cookie = headers_capturados.get("cookie") or headers_capturados.get("Cookie")
+        token = headers_capturados.get('authorization') or headers_capturados.get('Authorization')
+        ido = headers_capturados.get('ido') or headers_capturados.get('Ido') or headers_capturados.get('IDO')
+        cookie = headers_capturados.get('cookie') or headers_capturados.get('Cookie')
 
         if not token:
-            raise ValueError("Token (Authorization) não encontrado nos headers capturados.")
+            raise ValueError('Token (Authorization) não encontrado nos headers capturados.')
 
         token_expiracao = decodificar_expiracao_jwt(token)
         agora = int(time.time())
 
         if token_expiracao and token_expiracao <= agora:
-            raise ValueError(f"Token capturado já expirou (exp={token_expiracao}, agora={agora}).")
+            raise ValueError(f'Token capturado já expirou (exp={token_expiracao}, agora={agora}).')
 
-        minutos = (token_expiracao - agora) // 60 if token_expiracao else "?"
+        minutos = (token_expiracao - agora) // 60 if token_expiracao else '?'
         print(f"✔ Token válido! Expira em ~{minutos} minutos.")
-        break   # sai do loop de tentativas
+        break
 
     except Exception as e:
         print(f"✖ Erro na tentativa {tentativa}: {type(e).__name__}: {e!r}")
         print(traceback.format_exc())
         if driver:
             print(f"► URL no momento do erro: {driver.current_url}")
-            dump_diagnostico_pagina(driver, prefixo=f"falha_tentativa_{tentativa}")
+            dump_diagnostico_pagina(driver, prefixo=f'falha_tentativa_{tentativa}')
         if tentativa == MAX_TENTATIVAS:
-            print("✖ Todas as tentativas falharam.")
+            print('✖ Todas as tentativas falharam.')
             raise
 
     finally:
         if driver:
             driver.quit()
-            print("► Driver encerrado.")
+            print('► Driver encerrado.')
 
 
 # ============================================================
 #  SEÇÃO 5 — SALVA NO GOOGLE DRIVE
 # ============================================================
 
-print("\n► Autenticando no Google Drive...")
+print('\n► Autenticando no Google Drive...')
 drive_service = autenticar_drive()
 
 df = pd.DataFrame([{
-    "Token":          token,
-    "Ido":            ido,
-    "Cookie":         cookie,
-    "TokenExpiracao": token_expiracao,
+    'Token': token,
+    'Ido': ido,
+    'Cookie': cookie,
+    'TokenExpiracao': token_expiracao,
 }])
 
 salvar_excel_no_drive(drive_service, df)
 
-print("\n" + "=" * 55)
-print("  CONCLUÍDO COM SUCESSO")
-print("=" * 55)
-print(f"  Token  : {token[:60]}...")
-print(f"  Ido    : {ido}")
-print(f"  Expira : {token_expiracao} (Unix timestamp)")
-print("=" * 55)
+print('\n' + '=' * 55)
+print('  CONCLUÍDO COM SUCESSO')
+print('=' * 55)
+print(f'  Token  : {token[:60]}...')
+print(f'  Ido    : {ido}')
+print(f'  Expira : {token_expiracao} (Unix timestamp)')
+print('=' * 55)
