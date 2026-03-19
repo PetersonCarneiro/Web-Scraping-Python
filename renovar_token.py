@@ -415,8 +415,41 @@ def dump_diagnostico_pagina(driver, prefixo='diagnostico'):
             print(f"⚠ Falha ao salvar {ext}: {e}")
 
 
-def submeter_login(driver, botao, campo_senha):
-    """Aplica estratégias de submit compatíveis com páginas SPA e execução headless."""
+def houve_reacao_apos_submit(driver, botao, url_antes):
+    """Detecta se a UI reagiu após o submit do login, mesmo sem sair imediatamente da rota /login."""
+    try:
+        if driver.current_url != url_antes:
+            return True
+
+        if possui_sessao_autenticada(driver):
+            return True
+
+        if not login_ainda_visivel(driver):
+            return True
+
+        if extrair_mensagem_erro_login(driver):
+            return True
+
+        botao_desabilitado = driver.execute_script(
+            """
+            const button = arguments[0];
+            if (!button || !button.isConnected) {
+                return true;
+            }
+            return button.disabled || button.getAttribute('aria-disabled') === 'true';
+            """,
+            botao,
+        )
+        if botao_desabilitado:
+            return True
+    except Exception:
+        return False
+
+    return False
+
+
+def submeter_login(driver, botao, campo_senha, timeout_por_tentativa=5):
+    """Aplica estratégias de submit compatíveis com páginas SPA e só aceita a estratégia que realmente dispara reação."""
     erros = []
     estrategias = [
         ('click', lambda: botao.click()),
@@ -441,8 +474,15 @@ def submeter_login(driver, botao, campo_senha):
     for nome, estrategia in estrategias:
         try:
             print(f"► Tentando submit do login via {nome}...")
+            url_antes = driver.current_url
             estrategia()
+            WebDriverWait(driver, timeout_por_tentativa, poll_frequency=0.5).until(
+                lambda drv: houve_reacao_apos_submit(drv, botao, url_antes)
+            )
+            print(f"✔ Submit aceito via {nome}.")
             return
+        except TimeoutException:
+            erros.append(f'{nome}: submit sem reação visível em {timeout_por_tentativa}s')
         except Exception as exc:
             erros.append(f'{nome}: {exc}')
 
