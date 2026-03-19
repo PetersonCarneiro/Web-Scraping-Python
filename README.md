@@ -20,3 +20,4 @@ Cadastre estas secrets no repositório:
 - O script `renovar_token.py` roda em modo headless por padrão no GitHub Actions.
 - A captura do token usa os performance logs do Chrome, compatíveis com Selenium Python no ambiente do Actions.
 - Em caso de falha, o workflow publica artefatos HTML/PNG para diagnóstico.
+- O fluxo de login agora valida sinais de sucesso além da URL, o que ajuda em páginas SPA que mantêm `#/login` por alguns instantes antes de renderizar o menu interno.
